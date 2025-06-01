@@ -1,0 +1,90 @@
+version: '3.8'
+
+services:
+  # Task 1.9: Redis for task queue
+  redis:
+    image: redis:7-alpine
+    container_name: agent-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Task 1.10: PostgreSQL for state storage
+  postgres:
+    image: postgres:15-alpine
+    container_name: agent-postgres
+    environment:
+      POSTGRES_USER: agent_user
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-agent_secret}
+      POSTGRES_DB: agent_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./infrastructure/docker/init.sql:/docker-entrypoint-initdb.d/init.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U agent_user -d agent_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Task 1.11: MCP Server configuration
+  mcp-server:
+    image: modelcontextprotocol/server:latest
+    container_name: agent-mcp
+    environment:
+      - GITHUB_TOKEN=${GITHUB_TOKEN}
+      - MCP_SERVER_PORT=3000
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./ai-agent-test-repo:/workspace
+      - ./config/mcp:/config
+    depends_on:
+      - postgres
+      - redis
+
+  # Manager Agent (for later)
+  manager-agent:
+    build: ./agents/manager
+    container_name: agent-manager
+    environment:
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - REDIS_URL=redis://redis:6379
+      - DATABASE_URL=postgresql://agent_user:${POSTGRES_PASSWORD:-agent_secret}@postgres:5432/agent_db
+      - MCP_SERVER_URL=http://mcp-server:3000
+    depends_on:
+      - redis
+      - postgres
+      - mcp-server
+    volumes:
+      - ./agents/manager/src:/app/src
+      - ./shared:/app/shared
+
+  # Editor Agent (for later)
+  editor-agent:
+    build: ./agents/editor
+    container_name: agent-editor
+    environment:
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - MCP_SERVER_URL=http://mcp-server:3000
+      - REDIS_URL=redis://redis:6379
+    depends_on:
+      - mcp-server
+      - redis
+    volumes:
+      - ./agents/editor/src:/app/src
+      - ./shared:/app/shared
+
+volumes:
+  redis_data:
+  postgres_data:
